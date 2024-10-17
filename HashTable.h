@@ -27,6 +27,7 @@ public:
     ~HashTable();
 
     void insert(const string& key, void* value);
+    void put(const string& key, void* value); // Добавлен метод put
     void* get(const string& key) const;
     void remove(const string& key);
     void print() const;

@@ -53,6 +53,10 @@ void HashTable::insert(const std::string& key, void* value) {
     }
 }
 
+void HashTable::put(const std::string& key, void* value) {
+    insert(key, value);
+}
+
 void* HashTable::get(const std::string& key) const {
     int index = hash(key);
     HashNode* entry = table[index];
@@ -107,7 +111,7 @@ void HashTable::saveToFile(const string& filename) const {
     for (int i = 0; i < capacity; i++) {
         HashNode* entry = table[i];
         while (entry) {
-            file << entry->key << "," << entry->value << "\n";
+            file << entry->key << "," << reinterpret_cast<uintptr_t>(entry->value) << "\n";
             entry = entry->next;
         }
     }
@@ -132,7 +136,8 @@ void HashTable::loadFromFile(const string& filename) {
         string key, value;
         getline(ss, key, ',');
         getline(ss, value, ',');
-        insert(key, value);
+        uintptr_t ptrValue = stoull(value);
+        insert(key, reinterpret_cast<void*>(ptrValue));
     }
     file.close();
 }

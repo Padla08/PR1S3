@@ -4,6 +4,7 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <regex>
 #include "HashTable.h"  
 #include <nlohmann/json.hpp>  
 
@@ -96,6 +97,15 @@ struct Table {
 // Карта для хранения таблиц
 HashTable tables(10);  // Хеш-таблица для хранения таблиц
 
+string trim(const string& str) {
+    size_t first = str.find_first_not_of(' ');
+    if (string::npos == first) {
+        return str;
+    }
+    size_t last = str.find_last_not_of(' ');
+    return str.substr(first, last - first + 1);
+}
+
 // Функция для сохранения данных в JSON
 void save_table_json(const Table& table) {
     json j;
@@ -142,6 +152,47 @@ void load_table_json(const string& table_name) {
     table.primary_key = j["primary_key"];
 
     tables.put(table_name, reinterpret_cast<void*>(new Table(table)));  // Добавление таблицы в хеш-таблицу
+}
+
+//Загрузка таблицы из CSV
+void load_table_csv(const string& table_name) {
+    ifstream file(table_name + ".csv");
+    if (!file.is_open()) {
+        cout << "File not found." << endl;
+        return;
+    }
+
+    Table table(table_name);
+    string line;
+    bool first_line = true;
+
+    while (getline(file, line)) {
+        istringstream iss(line);
+        string value;
+        MyVector<string> row;
+
+        while (getline(iss, value, ',')) {
+            // Удаляем лишние кавычки
+            if (value.front() == '"' && value.back() == '"') {
+                value = value.substr(1, value.size() - 2);
+            }
+            row.push_back(value);
+        }
+
+        if (first_line) {
+            // Первая строка содержит заголовки столбцов
+            table.columns = row;
+            first_line = false;
+        }
+        else {
+            // Остальные строки содержат данные
+            table.rows.push_back(row);
+        }
+    }
+
+    tables.put(table_name, reinterpret_cast<void*>(new Table(table)));  // Добавление таблицы в хеш-таблицу
+    save_table_json(table);  // Сохранение таблицы в JSON
+    cout << "Table loaded from " << table_name << ".csv" << endl;
 }
 
 // Функция для сохранения таблицы в CSV
@@ -196,25 +247,53 @@ void create_table(const string& table_name, const MyVector<string>& columns, con
 }
 
 // Функция для выполнения SELECT
-void select_data(const string& table_name, const MyVector<string>& columns) {
-    Table* table = reinterpret_cast<Table*>(tables.get(table_name));
-    if (!table) {
-        cout << "Table not found." << endl;
+void select_data(const MyVector<string>& table_names, const MyVector<string>& columns) {
+    if (table_names.size == 0) {
+        cout << "No tables specified." << endl;
         return;
     }
-    lock_guard<mutex> guard(table->lock);  // Блокировка мьютекса для потокобезопасности
+
+    Table* first_table = reinterpret_cast<Table*>(tables.get(table_names[0]));
+    if (!first_table) {
+        cout << "Table not found: " << table_names[0] << endl;
+        return;
+    }
 
     // Если столбцы не указаны, выбираем все столбцы
     MyVector<string> selected_columns = columns;
     if (columns.size == 1 && columns[0] == "*") {
-        selected_columns = table->columns;
+        selected_columns = first_table->columns;
     }
 
-    for (size_t i = 0; i < table->rows.size; ++i) {
-        for (size_t j = 0; j < selected_columns.size; ++j) {
+    // Проверка наличия всех столбцов в таблицах
+    for (size_t i = 0; i < selected_columns.size; ++i) {
+        bool found = false;
+        for (size_t j = 0; j < table_names.size; ++j) {
+            Table* table = reinterpret_cast<Table*>(tables.get(table_names[j]));
+            if (!table) {
+                cout << "Table not found: " << table_names[j] << endl;
+                return;
+            }
             for (size_t k = 0; k < table->columns.size; ++k) {
-                if (table->columns[k] == selected_columns[j]) {
-                    cout << table->rows[i][k] << " ";
+                if (table->columns[k] == selected_columns[i]) {
+                    found = true;
+                    break;
+                }
+            }
+            if (found) break;
+        }
+        if (!found) {
+            cout << "Column not found: " << selected_columns[i] << endl;
+            return;
+        }
+    }
+
+    // Вывод данных
+    for (size_t i = 0; i < first_table->rows.size; ++i) {
+        for (size_t j = 0; j < selected_columns.size; ++j) {
+            for (size_t k = 0; k < first_table->columns.size; ++k) {
+                if (first_table->columns[k] == selected_columns[j]) {
+                    cout << first_table->rows[i][k] << " ";
                     break;
                 }
             }
@@ -240,7 +319,7 @@ void select_data_with_filter(const string& table_name, const MyVector<string>& c
 
     // Разбор условия
     istringstream iss(condition);
-    string col, op, val, logic_op;
+    string col, op, val;
     iss >> col >> op >> val;
 
     // Удаление лишних символов из значения
@@ -270,6 +349,74 @@ void select_data_with_filter(const string& table_name, const MyVector<string>& c
     }
 }
 
+//Cross-join
+void select_data_cross_join(const MyVector<string>& table_names, const MyVector<string>& columns) {
+    if (table_names.size < 2) {
+        cout << "At least two tables are required for CROSS JOIN." << endl;
+        return;
+    }
+
+    Table* first_table = reinterpret_cast<Table*>(tables.get(table_names[0]));
+    Table* second_table = reinterpret_cast<Table*>(tables.get(table_names[1]));
+    if (!first_table || !second_table) {
+        cout << "One or more tables not found." << endl;
+        return;
+    }
+
+    // Если столбцы не указаны, выбираем все столбцы
+    MyVector<string> selected_columns = columns;
+    if (columns.size == 1 && columns[0] == "*") {
+        selected_columns = first_table->columns;
+        for (size_t i = 0; i < second_table->columns.size; ++i) {
+            selected_columns.push_back(second_table->columns[i]);
+        }
+    }
+
+    // Проверка наличия всех столбцов в таблицах
+    for (size_t i = 0; i < selected_columns.size; ++i) {
+        bool found = false;
+        for (size_t j = 0; j < table_names.size; ++j) {
+            Table* table = reinterpret_cast<Table*>(tables.get(table_names[j]));
+            for (size_t k = 0; k < table->columns.size; ++k) {
+                if (table->columns[k] == selected_columns[i]) {
+                    found = true;
+                    break;
+                }
+            }
+            if (found) break;
+        }
+        if (!found) {
+            cout << "Column not found: " << selected_columns[i] << endl;
+            return;
+        }
+    }
+
+    // Вывод данных с CROSS JOIN
+    for (size_t i = 0; i < first_table->rows.size; ++i) {
+        for (size_t j = 0; j < second_table->rows.size; ++j) {
+            for (size_t k = 0; k < selected_columns.size; ++k) {
+                bool printed = false;
+                for (size_t l = 0; l < first_table->columns.size; ++l) {
+                    if (first_table->columns[l] == selected_columns[k]) {
+                        cout << first_table->rows[i][l] << " ";
+                        printed = true;
+                        break;
+                    }
+                }
+                if (!printed) {
+                    for (size_t l = 0; l < second_table->columns.size; ++l) {
+                        if (second_table->columns[l] == selected_columns[k]) {
+                            cout << second_table->rows[j][l] << " ";
+                            break;
+                        }
+                    }
+                }
+            }
+            cout << endl;
+        }
+    }
+}
+
 // Функция для выполнения INSERT
 void insert_data(const string& table_name, const MyVector<string>& values) {
     Table* table = reinterpret_cast<Table*>(tables.get(table_name));
@@ -278,6 +425,8 @@ void insert_data(const string& table_name, const MyVector<string>& values) {
         return;
     }
     lock_guard<mutex> guard(table->lock);  // Блокировка мьютекса для потокобезопасности
+
+    // Проверка на правильное количество значений
     if (values.size != table->columns.size - 1) {  // Уменьшаем на 1, так как первичный ключ добавляется автоматически
         cout << "Invalid number of values." << endl;
         return;
@@ -297,7 +446,10 @@ void insert_data(const string& table_name, const MyVector<string>& values) {
 
     table->rows.push_back(new_row);
     save_table_json(*table);  // Сохранение таблицы в JSON
+    cout << "Data inserted successfully." << endl;
 }
+
+
 
 // Функция для выполнения DELETE
 void delete_data(const string& table_name, const string& condition) {
@@ -315,13 +467,24 @@ void delete_data(const string& table_name, const string& condition) {
     }
 
     // Разбор условия
-    istringstream iss(condition);
-    string col, op, val, logic_op;
-    iss >> col >> op >> val;
+    regex condition_regex(R"((\w+)\s*(=|<|>|<=|>=|!=)\s*('[^']*'|"[^"]*"|\d+))");
+    smatch match;
+    if (!regex_search(condition, match, condition_regex)) {
+        cout << "Invalid condition format." << endl;
+        return;
+    }
 
-    // Удаление лишних символов из значения
-    if (val.front() == '(') val = val.substr(1);
-    if (val.back() == ')') val = val.substr(0, val.size() - 1);
+    string col = match[1];
+    string op = match[2];
+    string val = match[3];
+
+    // Удаление лишних кавычек из значения
+    if (val.front() == '\'' || val.front() == '"') {
+        val = val.substr(1, val.size() - 2);
+    }
+
+    // Отладочный вывод
+    cout << "Parsed condition: col=" << col << ", op=" << op << ", val=" << val << endl;
 
     MyVector<MyVector<string>> new_rows;
     bool any_match = false;
@@ -348,40 +511,14 @@ void delete_data(const string& table_name, const string& condition) {
         return;
     }
 
+    // Переподвес ID
+    for (size_t i = 0; i < new_rows.size; ++i) {
+        new_rows[i][0] = to_string(i);  // Обновляем ID
+    }
+
     table->rows = new_rows;
     save_table_json(*table);  // Сохранение таблицы в JSON
     cout << "Rows deleted successfully." << endl;
-}
-
-
-// Функция для парсинга комманд
-MyVector<string> parse_command(const string& command) {
-    MyVector<string> tokens;
-    istringstream iss(command);
-    string token;
-    bool inside_brackets = false;
-    string current_token = "";
-
-    while (iss >> token) {
-        if (token.front() == '(') {
-            inside_brackets = true;
-            current_token += token;
-        }
-        else if (token.back() == ')') {
-            inside_brackets = false;
-            current_token += " " + token;
-            tokens.push_back(current_token);
-            current_token = "";
-        }
-        else if (inside_brackets) {
-            current_token += " " + token;
-        }
-        else {
-            tokens.push_back(token);
-        }
-    }
-
-    return tokens;
 }
 
 // Функция для создания таблиц на основе JSON-схемы
@@ -412,6 +549,43 @@ void create_tables_from_schema(const string& schema_file) {
     }
 }
 
+// Функция для парсинга команд
+MyVector<string> parse_command(const string& command) {
+    MyVector<string> tokens;
+    istringstream iss(command);
+    string token;
+    bool inside_quotes = false;
+    string current_token = "";
+
+    while (iss >> token) {
+        if (token.front() == '(' && token.back() == ')') {
+            tokens.push_back(token.substr(1, token.size() - 2));
+        }
+        else if (token.front() == '(') {
+            inside_quotes = true;
+            current_token += token.substr(1) + " ";
+        }
+        else if (token.back() == ')') {
+            inside_quotes = false;
+            current_token += token.substr(0, token.size() - 1);
+            tokens.push_back(current_token);
+            current_token = "";
+        }
+        else if (inside_quotes) {
+            current_token += token + " ";
+        }
+        else {
+            tokens.push_back(token);
+        }
+    }
+
+    if (!current_token.empty()) {
+        tokens.push_back(current_token);
+    }
+
+    return tokens;
+}
+
 int main() {
     // Создание таблиц на основе JSON-схемы
     create_tables_from_schema("schema.json");
@@ -427,18 +601,24 @@ int main() {
 
         if (tokens[0] == "SELECT") {
             if (tokens.size < 4 || tokens[2] != "FROM") {
-                cout << "Invalid SELECT command. Usage: SELECT column1, column2 FROM table_name" << endl;
+                cout << "Invalid SELECT command. Usage: SELECT ('column1', 'column2') FROM table_name1, table_name2" << endl;
                 continue;
             }
             MyVector<string> columns;
             for (size_t i = 1; i < tokens.size - 2; ++i) {
                 columns.push_back(tokens[i]);
             }
-            if (tokens.size > 4 && tokens[4] == "WHERE") {
-                select_data_with_filter(tokens[tokens.size - 2], columns, tokens[tokens.size - 1]);
+            MyVector<string> table_names;
+            istringstream iss(tokens[tokens.size - 1]);
+            string table_name;
+            while (getline(iss, table_name, ',')) {
+                table_names.push_back(trim(table_name));
+            }
+            if (table_names.size > 1) {
+                select_data_cross_join(table_names, columns);
             }
             else {
-                select_data(tokens[tokens.size - 1], columns);
+                select_data(table_names, columns);
             }
         }
         else if (tokens[0] == "INSERT") {
@@ -451,7 +631,7 @@ int main() {
             istringstream iss(values_str);
             string value;
             while (getline(iss, value, ',')) {
-                values.push_back(value);
+                values.push_back(trim(value));
             }
             insert_data(tokens[2], values);
         }
@@ -469,6 +649,13 @@ int main() {
             }
             load_table_json(tokens[2]);
         }
+        else if (tokens[0] == "LOAD" && tokens[1] == "CSV") {
+            if (tokens.size != 3) {
+                cout << "Invalid LOAD CSV command. Usage: LOAD CSV table_name" << endl;
+                continue;
+            }
+            load_table_csv(tokens[2]);
+        }
         else if (tokens[0] == "CREATE") {
             if (tokens.size < 6 || tokens[1] != "TABLE" || tokens[3] != "(" || tokens[tokens.size - 2] != ")") {
                 cout << "Invalid CREATE TABLE command. Usage: CREATE TABLE table_name (column1, column2) PRIMARY KEY (primary_key)" << endl;
@@ -479,7 +666,7 @@ int main() {
             istringstream iss(columns_str);
             string column;
             while (getline(iss, column, ',')) {
-                columns.push_back(column);
+                columns.push_back(trim(column));
             }
             create_table(tokens[2], columns, tokens[tokens.size - 1]);
         }
