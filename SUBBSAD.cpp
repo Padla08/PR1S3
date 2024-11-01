@@ -5,7 +5,6 @@
 #include <mutex>
 #include <string>
 #include <regex>
-
 #include "HashTable.h"  
 #include "nlohmann/json.hpp"  
 
@@ -69,7 +68,7 @@ struct CustVector {
     }
 };
 
-// структуры для хранения таблицы
+// Структуры для хранения таблицы
 struct Table {
     string name;  // Имя таблицы
     CustVector<string> columns;  // Столбцы таблицы
@@ -235,6 +234,53 @@ void save_table_csv(const Table& table) {
     cout << "Table saved to " << table.name << ".csv" << endl;
 }
 
+// Функция для сохранения последовательности первичных ключей
+void save_pk_sequence(const Table& table) {
+    ofstream file(table.name + "_pk_sequence.txt");
+    if (!file.is_open()) {
+        cout << "Failed to open file for writing pk_sequence." << endl;
+        return;
+    }
+    file << table.pk_sequence;
+    cout << "Primary key sequence saved to " << table.name << "_pk_sequence.txt" << endl;
+}
+
+// Функция для загрузки последовательности первичных ключей
+void load_pk_sequence(Table& table) {
+    ifstream file(table.name + "_pk_sequence.txt");
+    if (!file.is_open()) {
+        cout << "File not found for pk_sequence." << endl;
+        return;
+    }
+    file >> table.pk_sequence;
+    cout << "Primary key sequence loaded from " << table.name << "_pk_sequence.txt" << endl;
+}
+
+// Функция для сохранения состояния мьютекса
+void save_lock_state(const Table& table) {
+    ofstream file(table.name + "_lock.txt");
+    if (!file.is_open()) {
+        cout << "Failed to open file for writing lock state." << endl;
+        return;
+    }
+    file << "locked"; 
+    cout << "Lock state saved to " << table.name << "_lock.txt" << endl;
+}
+
+// Функция для загрузки состояния мьютекса
+void load_lock_state(Table& table) {
+    ifstream file(table.name + "_lock.txt");
+    if (!file.is_open()) {
+        cout << "File not found for lock state." << endl;
+        return;
+    }
+    string state;
+    file >> state;
+    if (state == "locked") {
+        cout << "Lock state loaded from " << table.name << "_lock.txt" << endl;
+    }
+}
+
 // Функция создания таблицы
 void create_table(const string& table_name, const CustVector<string>& columns, const string& primary_key) {
     Table* existing_table = reinterpret_cast<Table*>(tables.get(table_name));
@@ -252,6 +298,8 @@ void create_table(const string& table_name, const CustVector<string>& columns, c
 
     tables.put(table_name, reinterpret_cast<void*>(new Table(new_table)));  // Добавление новой таблицы в хеш-таблицу
     save_table_json(new_table);  // Сохранение таблицы в JSON
+    save_pk_sequence(new_table);  // Сохранение последовательности первичных ключей
+    save_lock_state(new_table);  // Сохранение состояния мьютекса
     cout << "Table created successfully." << endl;
 }
 
@@ -290,6 +338,7 @@ void insert_data(const string& table_name, const CustVector<string>& values) {
 
     table->rows.push_back(new_row);
     save_table_json(*table);  // Сохранение таблицы в JSON
+    save_pk_sequence(*table);  // Сохранение последовательности первичных ключей
     cout << "Data inserted successfully." << endl;
 }
 
@@ -494,6 +543,7 @@ void delete_data(const string& table_name, const string& condition) {
 
     table->rows = new_rows;
     save_table_json(*table);  // Сохранение таблицы в JSON
+    save_pk_sequence(*table);  // Сохранение последовательности первичных ключей
     cout << "Rows deleted successfully." << endl;
 }
 
@@ -521,6 +571,8 @@ void create_tables_from_schema(const string& schema_file) {
 
         tables.put(table_name, reinterpret_cast<void*>(new Table(new_table)));  // Добавление новой таблицы в хеш-таблицу
         save_table_json(new_table);  // Сохранение таблицы в JSON
+        save_pk_sequence(new_table);  // Сохранение последовательности первичных ключей
+        save_lock_state(new_table);  // Сохранение состояния мьютекса
         cout << "Table " << table_name << " created successfully." << endl;
     }
 }
